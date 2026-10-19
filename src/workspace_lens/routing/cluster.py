@@ -52,9 +52,7 @@ def fit_pca(points_PN: t.Tensor, projection_dim: int) -> tuple[t.Tensor, t.Tenso
     """
     num_points, d_model = points_PN.shape
     if not 0 < projection_dim <= d_model:
-        raise ValueError(
-            f"projection_dim must be in [1, d_model={d_model}], got {projection_dim}"
-        )
+        raise ValueError(f"projection_dim must be in [1, d_model={d_model}], got {projection_dim}")
 
     mean_N = points_PN.mean(dim=0)
     centered_PN = points_PN - mean_N
@@ -72,9 +70,7 @@ def _kmeans_plusplus_init(
     """k-means++ seeding: first centroid uniform, each next one sampled with
     probability proportional to squared distance to the nearest chosen centroid."""
     num_points = points_PD.shape[0]
-    first_index = int(
-        t.randint(num_points, (1,), generator=generator, device=points_PD.device)
-    )
+    first_index = int(t.randint(num_points, (1,), generator=generator, device=points_PD.device))
     centroids_E_list_D: list[t.Tensor] = [points_PD[first_index]]
 
     for _ in range(num_clusters - 1):
@@ -83,9 +79,7 @@ def _kmeans_plusplus_init(
         # clamp: multinomial rejects an all-zero weight vector, which occurs
         # only if every point coincides with a chosen centroid (duplicate
         # activations); the clamp degrades that case to uniform sampling.
-        next_index = int(
-            t.multinomial(squared_distance_P.clamp(min=1e-12), 1, generator=generator)
-        )
+        next_index = int(t.multinomial(squared_distance_P.clamp(min=1e-12), 1, generator=generator))
         centroids_E_list_D.append(points_PD[next_index])
     return t.stack(centroids_E_list_D)
 
@@ -127,9 +121,7 @@ def kmeans(
                 # centroid. (If several clusters empty in one iteration they
                 # all re-seed to the same point and coincide until a later
                 # iteration separates them — accepted as a rare non-event.)
-                farthest_index = int(
-                    distances_PE.gather(1, assignments_Int_P[:, None]).argmax()
-                )
+                farthest_index = int(distances_PE.gather(1, assignments_Int_P[:, None]).argmax())
                 new_centroid_list_D.append(points_PD[farthest_index])
         new_centroids_ED = t.stack(new_centroid_list_D)
 
@@ -159,9 +151,19 @@ def collect_valid_position_activations(
     ``{layer: [total_positions, d_model]}`` as fp32 CPU tensors; prompts
     too short to leave any valid position are skipped with a warning.
     """
-    collected_activations_L_dict_list_PN: dict[int, list[t.Tensor]] = {
-        layer: [] for layer in layers
+    # One fp32 CPU buffer per layer, sized for every prompt at full length,
+    # filled in place and narrowed to the rows written.
+    # Collecting per-prompt chunks and concatenating them at the
+    # end holds the pool twice (the chunks and their concatenation;
+    # glibc does not hand the freed chunks back), and the pool is large:
+    # 1000 prompts x 111 positions x d_model in fp32 is 2.4 GB per layer
+    # at d_model 5376, 147 GB over the 61 source layers of a 62-block model.
+    # Untouched rows of the buffers cost no resident memory.
+    max_rows = len(prompts) * max_seq_len
+    pooled_activations_L_dict_PN: dict[int, t.Tensor] = {
+        layer: t.empty((max_rows, model.d_model), dtype=t.float32) for layer in layers
     }
+    num_rows = 0
     for prompt_idx, prompt in enumerate(prompts):
         input_ids_Int_1S, activations_L_dict_SN = record_activations(
             model, prompt, max_seq_len, list(layers)
@@ -174,13 +176,15 @@ def collect_valid_position_activations(
             logger.warning("  skipping clustering prompt %d: %s", prompt_idx, exc)
             continue
         source_positions_Int_P = t.where(mask_Bool_S)[0]
+        end_row = num_rows + int(source_positions_Int_P.numel())
         for layer in layers:
-            collected_activations_L_dict_list_PN[layer].append(
-                activations_L_dict_SN[layer][source_positions_Int_P].float().cpu()
+            pooled_activations_L_dict_PN[layer][num_rows:end_row].copy_(
+                activations_L_dict_SN[layer][source_positions_Int_P]
             )
+        num_rows = end_row
 
-    if not collected_activations_L_dict_list_PN[layers[0]]:
+    if num_rows == 0:
         raise ValueError("no prompt was long enough to collect activations from")
     return {
-        layer: t.cat(collected_activations_L_dict_list_PN[layer]) for layer in layers
+        layer: pooled_PN[:num_rows] for layer, pooled_PN in pooled_activations_L_dict_PN.items()
     }
