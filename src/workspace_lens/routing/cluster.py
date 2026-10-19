@@ -52,7 +52,9 @@ def fit_pca(points_PN: t.Tensor, projection_dim: int) -> tuple[t.Tensor, t.Tenso
     """
     num_points, d_model = points_PN.shape
     if not 0 < projection_dim <= d_model:
-        raise ValueError(f"projection_dim must be in [1, d_model={d_model}], got {projection_dim}")
+        raise ValueError(
+            f"projection_dim must be in [1, d_model={d_model}], got {projection_dim}"
+        )
 
     mean_N = points_PN.mean(dim=0)
     centered_PN = points_PN - mean_N
@@ -70,7 +72,9 @@ def _kmeans_plusplus_init(
     """k-means++ seeding: first centroid uniform, each next one sampled with
     probability proportional to squared distance to the nearest chosen centroid."""
     num_points = points_PD.shape[0]
-    first_index = int(t.randint(num_points, (1,), generator=generator, device=points_PD.device))
+    first_index = int(
+        t.randint(num_points, (1,), generator=generator, device=points_PD.device)
+    )
     centroids_E_list_D: list[t.Tensor] = [points_PD[first_index]]
 
     for _ in range(num_clusters - 1):
@@ -79,7 +83,9 @@ def _kmeans_plusplus_init(
         # clamp: multinomial rejects an all-zero weight vector, which occurs
         # only if every point coincides with a chosen centroid (duplicate
         # activations); the clamp degrades that case to uniform sampling.
-        next_index = int(t.multinomial(squared_distance_P.clamp(min=1e-12), 1, generator=generator))
+        next_index = int(
+            t.multinomial(squared_distance_P.clamp(min=1e-12), 1, generator=generator)
+        )
         centroids_E_list_D.append(points_PD[next_index])
     return t.stack(centroids_E_list_D)
 
@@ -121,7 +127,9 @@ def kmeans(
                 # centroid. (If several clusters empty in one iteration they
                 # all re-seed to the same point and coincide until a later
                 # iteration separates them — accepted as a rare non-event.)
-                farthest_index = int(distances_PE.gather(1, assignments_Int_P[:, None]).argmax())
+                farthest_index = int(
+                    distances_PE.gather(1, assignments_Int_P[:, None]).argmax()
+                )
                 new_centroid_list_D.append(points_PD[farthest_index])
         new_centroids_ED = t.stack(new_centroid_list_D)
 
@@ -151,14 +159,12 @@ def collect_valid_position_activations(
     ``{layer: [total_positions, d_model]}`` as fp32 CPU tensors; prompts
     too short to leave any valid position are skipped with a warning.
     """
-    # One fp32 CPU buffer per layer, sized for every prompt at full length,
-    # filled in place and narrowed to the rows written.
-    # Collecting per-prompt chunks and concatenating them at the
-    # end holds the pool twice (the chunks and their concatenation;
-    # glibc does not hand the freed chunks back), and the pool is large:
-    # 1000 prompts x 111 positions x d_model in fp32 is 2.4 GB per layer
-    # at d_model 5376, 147 GB over the 61 source layers of a 62-block model.
-    # Untouched rows of the buffers cost no resident memory.
+    # One fp32 CPU buffer per layer, sized for every prompt at full length, filled in place
+    # and narrowed to the rows written. Collecting per-prompt chunks and concatenating them
+    # at the end holds the pool twice (the chunks and their concatenation; glibc does not
+    # hand the freed chunks back), and the pool is large: 1000 prompts x 111 positions x
+    # d_model in fp32 is 2.4 GB per layer at d_model 5376, 147 GB over the 61 source layers
+    # of a 62-block model. Untouched rows of the buffers cost no resident memory.
     max_rows = len(prompts) * max_seq_len
     pooled_activations_L_dict_PN: dict[int, t.Tensor] = {
         layer: t.empty((max_rows, model.d_model), dtype=t.float32) for layer in layers
